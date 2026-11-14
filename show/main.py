@@ -1309,9 +1309,15 @@ def get_mac_sync_mode(config_db):
     metadata = config_db.get_entry('DEVICE_METADATA', 'localhost')
     if metadata.get('subtype') == 'L3EvpnMH':
         return 'fpm'
-    # TODO: use swsscommon.CFG_FDB_SYNC_TABLE_NAME once sonic-net/sonic-buildimage#30365 is merged.
+    # Table name matches CFG_FDB_SYNC_TABLE_NAME in sonic-swss (fpmsyncd/macsync.h).
     fdb_sync = config_db.get_entry('FDB_SYNC', 'global')
     return fdb_sync.get('mac_sync_mode', 'kernel')
+
+
+def get_running_mac_sync_mode(state_db):
+    # fpmsyncd publishes the mode it started with, so it lags a config change until the bgp container restarts.
+    # Table name matches STATE_FDB_SYNC_TABLE_NAME in sonic-swss (fpmsyncd/macsync.h).
+    return state_db.get('STATE_DB', 'FDB_SYNC|global', 'mac_sync_mode') or 'unknown'
 
 
 def show_mac_sync_mode(ctx, db):
@@ -1322,8 +1328,18 @@ def show_mac_sync_mode(ctx, db):
         ctx.fail(str(e))
 
     for ns in ns_list:
-        mode = get_mac_sync_mode(db.cfgdb_clients[ns])
-        click.echo("{}: {}".format(ns, mode) if len(ns_list) > 1 else mode)
+        configured = get_mac_sync_mode(db.cfgdb_clients[ns])
+        running = get_running_mac_sync_mode(db.db_clients[ns])
+        indent = ""
+        if len(ns_list) > 1:
+            click.echo("{}:".format(ns))
+            indent = "  "
+        click.echo("{}Configured: {}".format(indent, configured))
+        click.echo("{}Running: {}".format(indent, running))
+        # fpmsyncd runs in fpm mode only for an exact 'fpm' and in kernel mode for anything else.
+        effective = 'fpm' if configured == 'fpm' else 'kernel'
+        if running != 'unknown' and running != effective:
+            click.echo("{}The configured mode takes effect when the bgp container restarts.".format(indent))
 
 
 @fdb.command('mac-sync-mode')

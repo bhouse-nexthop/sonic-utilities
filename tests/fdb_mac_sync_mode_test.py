@@ -14,6 +14,7 @@ EVPN_ES_TABLE = 'EVPN_ETHERNET_SEGMENT'
 FDB_SYNC_KEY = 'global'
 MAC_SYNC_MODE_FIELD = 'mac_sync_mode'
 MAC_SYNC_MODE_DEFAULT = 'kernel'
+STATE_FDB_SYNC_KEY = 'FDB_SYNC|global'
 DEVICE_METADATA_TABLE = 'DEVICE_METADATA'
 DEVICE_METADATA_KEY = 'localhost'
 L3_EVPN_MH_SUBTYPE = 'L3EvpnMH'
@@ -129,6 +130,25 @@ class TestFdbMacSyncModeConfig:
         assert db.cfgdb.get_table(FDB_SYNC_TABLE)[FDB_SYNC_KEY][MAC_SYNC_MODE_FIELD] == "fpm"
 
 
+def show_output(configured, running="unknown", note=False):
+    out = f"Configured: {configured}\nRunning: {running}\n"
+    if note:
+        out += "The configured mode takes effect when the bgp container restarts.\n"
+    return out
+
+
+@pytest.fixture
+def running_mode(cli_db_connection):
+    """Publish the running mode the way fpmsyncd does, and remove it afterwards."""
+    _, db = cli_db_connection
+
+    def publish(mode):
+        db.db.set("STATE_DB", STATE_FDB_SYNC_KEY, MAC_SYNC_MODE_FIELD, mode)
+
+    yield publish
+    db.db.delete("STATE_DB", STATE_FDB_SYNC_KEY)
+
+
 class TestFdbMacSyncModeShow:
     def test_mac_sync_mode_show_default(self, cli_db_connection):
         runner, db = cli_db_connection
@@ -141,9 +161,9 @@ class TestFdbMacSyncModeShow:
         assert result.exit_code == 0, (
             f"Got exit code {result.exit_code} - {result.output}, expected 0"
         )
-        assert result.output.strip() == MAC_SYNC_MODE_DEFAULT, (
-            f"Found unexpected {MAC_SYNC_MODE_FIELD} {result.output.strip()}, "
-            f"expected the '{MAC_SYNC_MODE_DEFAULT}' default"
+        assert result.output == show_output(MAC_SYNC_MODE_DEFAULT), (
+            f"Found unexpected output {result.output!r}, "
+            f"expected the '{MAC_SYNC_MODE_DEFAULT}' default and an unknown running mode"
         )
 
     def test_mac_sync_mode_show_entry_without_mode(self, cli_db_connection):
@@ -155,9 +175,8 @@ class TestFdbMacSyncModeShow:
         assert result.exit_code == 0, (
             f"Got exit code {result.exit_code} - {result.output}, expected 0"
         )
-        assert result.output.strip() == MAC_SYNC_MODE_DEFAULT, (
-            f"Found unexpected {MAC_SYNC_MODE_FIELD} {result.output.strip()}, "
-            f"expected the '{MAC_SYNC_MODE_DEFAULT}' default"
+        assert result.output == show_output(MAC_SYNC_MODE_DEFAULT), (
+            f"Found unexpected output {result.output!r}, expected the '{MAC_SYNC_MODE_DEFAULT}' default"
         )
 
     @pytest.mark.parametrize("mac_sync_mode", ["kernel", "fpm"])
@@ -173,9 +192,60 @@ class TestFdbMacSyncModeShow:
         assert result.exit_code == 0, (
             f"Got exit code {result.exit_code} - {result.output}, expected 0"
         )
-        assert result.output.strip() == mac_sync_mode, (
-            f"Found unexpected {MAC_SYNC_MODE_FIELD} {result.output.strip()}, "
-            f"expected '{mac_sync_mode}'"
+        assert result.output == show_output(mac_sync_mode), (
+            f"Found unexpected output {result.output!r}, expected configured '{mac_sync_mode}'"
+        )
+
+    @pytest.mark.parametrize("configured,running,note", [
+        ("fpm", "fpm", False),
+        ("kernel", "kernel", False),
+        # Configured but the bgp container has not restarted yet.
+        ("fpm", "kernel", True),
+        ("kernel", "fpm", True),
+        # Anything but an exact 'fpm' runs as kernel, so a hand-edited value changes nothing on restart.
+        ("FPM", "kernel", False),
+        ("bogus", "kernel", False),
+        ("bogus", "fpm", True),
+    ])
+    def test_mac_sync_mode_show_running(self, cli_db_connection, running_mode, configured, running, note):
+        runner, db = cli_db_connection
+        db.cfgdb.set_entry(FDB_SYNC_TABLE, FDB_SYNC_KEY, {MAC_SYNC_MODE_FIELD: configured})
+        running_mode(running)
+
+        for group, command in (("fdb", "mac-sync-mode"), ("mac", "sync-mode")):
+            result = runner.invoke(show.cli.commands[group].commands[command], [], obj=db)
+            assert result.exit_code == 0, (
+                f"Got exit code {result.exit_code} - {result.output}, expected 0"
+            )
+            assert result.output == show_output(configured, running, note), (
+                f"show {group} {command} printed {result.output!r}"
+            )
+
+    def test_mac_sync_mode_show_running_empty(self, cli_db_connection, running_mode):
+        runner, db = cli_db_connection
+        db.cfgdb.set_entry(FDB_SYNC_TABLE, FDB_SYNC_KEY, {MAC_SYNC_MODE_FIELD: "fpm"})
+        running_mode("")
+
+        result = runner.invoke(show.cli.commands["fdb"].commands["mac-sync-mode"], [], obj=db)
+        assert result.exit_code == 0, (
+            f"Got exit code {result.exit_code} - {result.output}, expected 0"
+        )
+        assert result.output == show_output("fpm"), (
+            f"Found unexpected output {result.output!r}, expected an unknown running mode and no note"
+        )
+
+    @pytest.mark.parametrize("group,command", [("fdb", "mac-sync-mode"), ("mac", "sync-mode")])
+    def test_mac_sync_mode_show_l3evpnmh_running_kernel(self, l3evpnmh_db_connection, running_mode, group, command):
+        runner, db = l3evpnmh_db_connection
+        db.cfgdb.set_entry(FDB_SYNC_TABLE, FDB_SYNC_KEY, {MAC_SYNC_MODE_FIELD: "kernel"})
+        running_mode("kernel")
+
+        result = runner.invoke(show.cli.commands[group].commands[command], [], obj=db)
+        assert result.exit_code == 0, (
+            f"Got exit code {result.exit_code} - {result.output}, expected 0"
+        )
+        assert result.output == show_output("fpm", "kernel", True), (
+            f"Found unexpected output {result.output!r} on an {L3_EVPN_MH_SUBTYPE} device running kernel"
         )
 
     @pytest.mark.parametrize("mac_sync_mode", [None, "kernel", "fpm"])
@@ -193,7 +263,7 @@ class TestFdbMacSyncModeShow:
         assert mac_result.exit_code == 0, (
             f"Got exit code {mac_result.exit_code} - {mac_result.output}, expected 0"
         )
-        assert mac_result.output == fdb_result.output == (mac_sync_mode or MAC_SYNC_MODE_DEFAULT) + "\n", (
+        assert mac_result.output == fdb_result.output == show_output(mac_sync_mode or MAC_SYNC_MODE_DEFAULT), (
             f"show mac sync-mode printed {mac_result.output!r}, show fdb mac-sync-mode {fdb_result.output!r}"
         )
 
@@ -206,9 +276,9 @@ class TestFdbMacSyncModeShow:
         assert result.exit_code == 0, (
             f"Got exit code {result.exit_code} - {result.output}, expected 0"
         )
-        assert result.output.strip() == "fpm", (
-            f"Found unexpected {MAC_SYNC_MODE_FIELD} {result.output.strip()} on an "
-            f"{L3_EVPN_MH_SUBTYPE} device, expected 'fpm'"
+        assert result.output == show_output("fpm"), (
+            f"Found unexpected output {result.output!r} on an {L3_EVPN_MH_SUBTYPE} device, "
+            f"expected configured 'fpm'"
         )
 
 

@@ -15164,7 +15164,7 @@ This command displays the default mac aging time on the switch
 
 **show mac sync-mode**
 
-This command displays how MAC (FDB) state is synchronized with FRR: `kernel` (through the Linux kernel bridge FDB) or `fpm` (over the FPM channel). It displays `kernel` when the mode is not configured, and always `fpm` on a device with the `L3EvpnMH` subtype. `show fdb mac-sync-mode` displays the same. On a multi-ASIC device each ASIC namespace has its own mode: `-n` selects one, and without it the mode of each namespace is displayed after its name.
+This command displays how MAC (FDB) state is synchronized with FRR: `kernel` (through the Linux kernel bridge FDB) or `fpm` (over the FPM channel). It displays the configured mode, which is `kernel` when the mode is not configured and always `fpm` on a device with the `L3EvpnMH` subtype, and the running mode that fpmsyncd published in STATE_DB, which is `unknown` until fpmsyncd has published it. The two differ after a mode change until the bgp container restarts, and the command then says so. `show fdb mac-sync-mode` displays the same. On a multi-ASIC device each ASIC namespace has its own mode: `-n` selects one, and without it the modes of each namespace are displayed under its name.
 
 - Usage:
   ```
@@ -15175,7 +15175,9 @@ This command displays how MAC (FDB) state is synchronized with FRR: `kernel` (th
 - Example:
   ```
   admin@sonic:~$ show mac sync-mode
-  fpm
+  Configured: fpm
+  Running: kernel
+  The configured mode takes effect when the bgp container restarts.
   ```
 
 **sonic-clear fdb all**

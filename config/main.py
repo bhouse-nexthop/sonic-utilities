@@ -10789,7 +10789,7 @@ def mac_sync_mode(ctx, db, mode):
 
     config_db = ValidatedConfigDBConnector(cfgdb)
     try:
-        # TODO: use swsscommon.CFG_FDB_SYNC_TABLE_NAME once sonic-net/sonic-buildimage#30365 is merged.
+        # Table name matches CFG_FDB_SYNC_TABLE_NAME in sonic-swss (fpmsyncd/macsync.h).
         config_db.mod_entry('FDB_SYNC', 'global',
                             {'mac_sync_mode': mode})
     except (ValueError, JsonPatchConflict) as e:

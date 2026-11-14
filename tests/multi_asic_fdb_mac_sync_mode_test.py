@@ -92,11 +92,11 @@ class TestMultiAsicFdbMacSyncMode:
         for group, command in SHOW_COMMANDS:
             result = runner.invoke(show.main.cli.commands[group], ["-n", "asic0", command], obj=db)
             assert result.exit_code == 0, result.output
-            assert result.output == "fpm\n", f"show {group} -n asic0 {command}"
+            assert result.output == "Configured: fpm\nRunning: unknown\n", f"show {group} -n asic0 {command}"
 
             result = runner.invoke(show.main.cli.commands[group], ["-n", "asic1", command], obj=db)
             assert result.exit_code == 0, result.output
-            assert result.output == "kernel\n", f"show {group} -n asic1 {command}"
+            assert result.output == "Configured: kernel\nRunning: unknown\n", f"show {group} -n asic1 {command}"
 
     def test_show_names_each_namespace_without_a_selection(self):
         runner = CliRunner()
@@ -106,7 +106,31 @@ class TestMultiAsicFdbMacSyncMode:
         for group, command in SHOW_COMMANDS:
             result = runner.invoke(show.main.cli.commands[group], [command], obj=db)
             assert result.exit_code == 0, result.output
-            assert result.output == "asic0: fpm\nasic1: kernel\n", f"show {group} {command}"
+            assert result.output == (
+                "asic0:\n  Configured: fpm\n  Running: unknown\n"
+                "asic1:\n  Configured: kernel\n  Running: unknown\n"
+            ), f"show {group} {command}"
+
+    def test_show_reads_the_running_mode_of_each_namespace(self):
+        # asic0 was configured fpm after its bgp container started in kernel mode; asic1 runs fpm as configured.
+        runner = CliRunner()
+        db = Db()
+        db.cfgdb_clients["asic0"].set_entry(FDB_SYNC_TABLE, FDB_SYNC_KEY, {MAC_SYNC_MODE_FIELD: "fpm"})
+        db.cfgdb_clients["asic1"].set_entry(FDB_SYNC_TABLE, FDB_SYNC_KEY, {MAC_SYNC_MODE_FIELD: "fpm"})
+        db.db_clients["asic0"].set("STATE_DB", "FDB_SYNC|global", MAC_SYNC_MODE_FIELD, "kernel")
+        db.db_clients["asic1"].set("STATE_DB", "FDB_SYNC|global", MAC_SYNC_MODE_FIELD, "fpm")
+        try:
+            for group, command in SHOW_COMMANDS:
+                result = runner.invoke(show.main.cli.commands[group], [command], obj=db)
+                assert result.exit_code == 0, result.output
+                assert result.output == (
+                    "asic0:\n  Configured: fpm\n  Running: kernel\n"
+                    "  The configured mode takes effect when the bgp container restarts.\n"
+                    "asic1:\n  Configured: fpm\n  Running: fpm\n"
+                ), f"show {group} {command}"
+        finally:
+            for ns in ("asic0", "asic1"):
+                db.db_clients[ns].delete("STATE_DB", "FDB_SYNC|global")
 
     @classmethod
     def teardown_class(cls):
